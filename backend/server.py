@@ -31,8 +31,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -570,6 +570,8 @@ async def send_message(
             params=params,
         )
 
+        if guard["decision"] != "REVIEW": pending_actions.pop(action["id"], None)
+
         latency = safe_latency(
             guard.get("latency")
         )
@@ -655,30 +657,14 @@ async def send_message(
 # ============================================================
 # ACTIONS
 # ============================================================
-
 @app.get("/actions")
 async def get_actions():
-
     results = []
-
-    # Return currently pending actions using their ORIGINAL IDs.
-    for action_id, pending in pending_actions.items():
-
-        action = pending["action"]
-
-        results.append(
-            {
-                "action": action,
-                "trace": None,
-                "status": "REVIEW",
-            }
-        )
-
-    # Also expose historical action traces.
     traces = read_traces()
 
-    for trace in traces:
+    historical_action_ids = set()
 
+    for trace in reversed(traces):
         if trace.get("trace_type") != "action":
             continue
 
@@ -688,20 +674,15 @@ async def get_actions():
             continue
 
         frontend_trace = trace_to_frontend(trace)
-
-        # Historical actions get a stable trace-derived ID.
-        historical_id = (
-            frontend_trace["id"]
-        )
-
         action = frontend_trace.get("action")
 
         if action is None:
             continue
 
-        action["id"] = (
-            f"act_{historical_id}"
-        )
+        historical_id = frontend_trace["id"]
+        action["id"] = f"act_{historical_id}"
+
+        historical_action_ids.add(action["id"])
 
         results.append(
             {
@@ -711,8 +692,19 @@ async def get_actions():
             }
         )
 
-    return results
+    for action_id, pending in pending_actions.items():
+        if action_id in historical_action_ids:
+            continue
 
+        results.append(
+            {
+                "action": pending["action"],
+                "trace": None,
+                "status": "REVIEW",
+            }
+        )
+
+    return results
 
 @app.post(
     "/actions/{action_id}/execute"
